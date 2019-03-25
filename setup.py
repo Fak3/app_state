@@ -11,7 +11,7 @@ except (IOError, ImportError) as e:
 
 setup(
     name='app_state',
-    version='0.1',
+    version='0.2',
     description='app_state',
     long_description=description,
     author='Roman Evstifeev',
@@ -20,7 +20,7 @@ setup(
     license='MIT',
     #packages=find_packages(),
     py_modules=['app_state'],
-    install_requires=['getinstance'],
+    install_requires=['getinstance', 'sniffio', 'lockorator'],
     include_package_data=True,
     classifiers = [
         'Development Status :: 4 - Beta',
