@@ -45,7 +45,12 @@ class DictNode(dict):
     def __delitem__(self, key):
         super().__delitem__(key)
         state.signal(f'{self._appstate_path}.{key}')
-        
+
+    def setdefault(self, key, value):
+        if key not in self:
+            self[key] = value
+        return self[key]
+    
     def __setitem__(self, key, value, signal=True):
         node = self._make_subnode(key, value, signal)
         super().__setitem__(key, node)
@@ -124,26 +129,31 @@ class State(DictNode):
                     for instance in cls._appstate_instances.all():
                         f(instance)
 
+    
     def autopersist(self, file, timeout=3, nursery=None):
-        if current_async_library() == 'trio' and not nursery:
-            raise Exception('Provide nursery for state persistence task to run in.')
-
         self._appstate_shelve = shelve.open(file)
         
         for k, v in self._appstate_shelve.get('state', {}).items():
             self.__setitem__(k, v, signal=False)
-        #self._funcwatchlist['state'].append(partial(persist, timeout))
         
         @on('state')
         def persist():
-            if current_async_library() == 'trio':
-                nursery.start_soon(persist_real, timeout)
+            try:
+                asynclib = current_async_library()
+            except:
+                state._appstate_shelve['state'] = state.as_dict()
+                state._appstate_shelve.sync()
             else:
-                asyncio.create_task(persist_real(timeout))
+                if asynclib == 'trio':
+                    if not nursery:
+                        raise Exception('Provide nursery for state persistence task to run in.')
+                    nursery.start_soon(persist_delayed, timeout)
+                else:
+                    asyncio.create_task(persist_delayed(timeout))
 
 
 @lock_or_exit()
-async def persist_real(timeout):
+async def persist_delayed(timeout):
     if current_async_library() == 'trio':
         await trio.sleep(timeout)
     else:
@@ -156,7 +166,7 @@ async def persist_real(timeout):
 class FunctionWrapper:
     """
     If wrapped callable is a regular function, this wrapper does nothing.
-    If wrapped callable is a method, it will ensure that owner calss has
+    If wrapped callable is a method, it will ensure that owner class has
     a member `_appstate_instances` which is an InstanceManager.
     """
     def __init__(self, f):
