@@ -11,7 +11,7 @@ except (IOError, ImportError) as e:
 
 setup(
     name='app_state',
-    version='0.3',
+    version='0.4',
     description='app_state',
     long_description=description,
     author='Roman Evstifeev',

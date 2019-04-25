@@ -102,6 +102,17 @@ class State(DictNode):
         self._appstate_classwatchlist = defaultdict(list)
         self._appstate_path = 'state'
 
+    def call(self, f, *a, **kw):
+        if not inspect.iscoroutinefunction(f):
+            return f(*a, **kw)
+        
+        if current_async_library() == 'trio':
+            if not getattr(state, '_nursery'):
+                raise Exception('Provide state._nursery for async task to run.')
+            state._nursery.start_soon(f)
+        else:
+            return asyncio.create_task(f())
+        
     def signal(self, path):
         #print(path, self._lazy_watchlist, dict(self._classwatchlist))
         for f, patterns in self._appstate_lazy_watchlist:
@@ -120,21 +131,21 @@ class State(DictNode):
             if watcher_pat.startswith(path) \
                or path.startswith(watcher_pat):
                 for f in self._appstate_funcwatchlist[watcher_pat]:
-                    f()
+                    self.call(f)
 
         for watcher_pat in copy(self._appstate_classwatchlist):
             if watcher_pat.startswith(path) \
                or path.startswith(watcher_pat):
                 for cls, f in self._appstate_classwatchlist[watcher_pat]:
                     for instance in cls._appstate_instances.all():
-                        f(instance)
+                        self.call(f, instance)
 
     
     def autopersist(self, file, timeout=3, nursery=None):
         self._appstate_shelve = shelve.open(file)
         
         for k, v in self._appstate_shelve.get('state', {}).items():
-            self.__setitem__(k, v, signal=False)
+            self.__setitem__(k, v, signal=True)
         
         @on('state')
         def persist():
@@ -145,6 +156,8 @@ class State(DictNode):
                 state._appstate_shelve.sync()
             else:
                 if asynclib == 'trio':
+                    #if not nursery:
+                    nursery = getattr(state, '_nursery')
                     if not nursery:
                         raise Exception('Provide nursery for state persistence task to run in.')
                     nursery.start_soon(persist_delayed, timeout)
@@ -175,10 +188,11 @@ class FunctionWrapper:
 
     def __call__(self, *a, **kw):
         return self.f(*a, **kw)
-
+        
     def __set_name__(self, owner, name):
         if not hasattr(owner, '_appstate_instances'):
-            owner._appstate_instances = InstanceManager(owner)
+            owner._appstate_instances = InstanceManager(owner, '_appstate_instances')
+        setattr(owner, self.f.__name__, self.f)
 
 
 class on:
@@ -191,8 +205,7 @@ class on:
 
     def __call__(self, f):
         wrapped = FunctionWrapper(f)
-        state._appstate_lazy_watchlist.append((wrapped, self.patterns))
-        #return f
+        state._appstate_lazy_watchlist.append((f, self.patterns))
         return wrapped
 
 
