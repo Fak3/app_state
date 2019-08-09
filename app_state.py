@@ -46,6 +46,31 @@ class DictNode(dict):
         super().__delitem__(key)
         state.signal(f'{self._appstate_path}.{key}')
 
+    def update(self, *a, **kw):
+        changed = False
+        if len(a) > 1:
+            raise TypeError(f'update expected at most 1 arguments, got {len(a)}')
+        if a:
+            if hasattr(a[0], 'keys'):
+                for key in a[0]:
+                    if key not in self or not self[key] == a[0][key]:
+                        changed = True
+                        #print(key, a[0][key])
+                        self.__setitem__(key, a[0][key], signal=False)
+            else:
+                for k, v in a[0]:
+                    if k not in self or not self[k] == v:
+                        changed = True
+                        self.__setitem__(k, v, signal=False)
+                    
+        for key in kw:
+            if key not in self or not self[key] == kw[key]:
+                changed = True
+                self.__setitem__(key, kw[key], signal=False)
+                
+        if changed:
+            state.signal(f'{self._appstate_path}')
+        
     def setdefault(self, key, value):
         if key not in self:
             self[key] = value
@@ -114,9 +139,13 @@ class State(DictNode):
             return asyncio.create_task(f())
         
     def signal(self, path):
+        #print('sig')
+        #import ipdb; ipdb.sset_trace()
         #print(path, self._lazy_watchlist, dict(self._classwatchlist))
+        path += '.'
         for f, patterns in self._appstate_lazy_watchlist:
             module = inspect.getmodule(f)
+            #print(f.__qualname__, module, type(f.__qualname__))
             cls = getattr(module, f.__qualname__.split('.')[0])
 
             if cls and hasattr(cls, f.__name__):
@@ -124,28 +153,30 @@ class State(DictNode):
                     self._appstate_classwatchlist[pat].append((cls, f))
             else:
                 for pat in patterns:
-                    self._appstate_funcwatchlist[pat].append(f)
+                    self._appstate_funcwatchlist[pat].append((module, f))
         self._appstate_lazy_watchlist = []
 
         for watcher_pat in self._appstate_funcwatchlist:
-            if watcher_pat.startswith(path) \
-               or path.startswith(watcher_pat):
-                for f in self._appstate_funcwatchlist[watcher_pat]:
+            watcher = watcher_pat + '.'
+            if watcher.startswith(path) or path.startswith(watcher):
+                for module, f in self._appstate_funcwatchlist[watcher_pat]:
                     self.call(f)
 
         for watcher_pat in copy(self._appstate_classwatchlist):
-            if watcher_pat.startswith(path) \
-               or path.startswith(watcher_pat):
+            watcher = watcher_pat + '.'
+            if watcher.startswith(path) or path.startswith(watcher):
                 for cls, f in self._appstate_classwatchlist[watcher_pat]:
+                    name = f.__qualname__.split('.')[-1]
                     for instance in cls._appstate_instances.all():
-                        self.call(f, instance)
+                        self.call(getattr(instance, name))
 
     
     def autopersist(self, file, timeout=3, nursery=None):
         self._appstate_shelve = shelve.open(file)
         
         for k, v in self._appstate_shelve.get('state', {}).items():
-            self.__setitem__(k, v, signal=True)
+            self.__setitem__(k, v, signal=False)
+        self.signal('state')
         
         @on('state')
         def persist():
