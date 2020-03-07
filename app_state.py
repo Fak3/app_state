@@ -2,9 +2,14 @@ import inspect
 import asyncio
 import shelve
 from collections import defaultdict
+from collections.abc import Mapping
 from copy import copy
 from functools import update_wrapper, partial
 
+try:
+    from kivy._event import Observable
+except ImportError:
+    Observable = object
 
 try:
     import trio
@@ -16,34 +21,61 @@ from lockorator.asyncio import lock_or_exit
 from sniffio import current_async_library
 
 
-class DictNode(dict):
+class DictNode(Mapping, Observable):
+    def __init__(self, *a, **kw):
+        self._appstate_path = kw.pop('path')
+        self._dict = dict(*a, **kw)
+        
+    def __iter__(self):
+        return self._dict.__iter__()
+    
+    def __len__(self):
+        return self._dict.__len__()
+    
+    #@property
+    #def __class__(self):
+        #return type('DictNode', (Observable,dict), {}) 
+        
     def __repr__(self):
         return repr(self.as_dict(full=True))
     
     def _make_subnode(self, key, value, signal=True):
-        if not isinstance(value, dict):
+        if not isinstance(value, Mapping):
             return value
         if isinstance(value, DictNode):
             return value
         
-        node = DictNode(value)
-        node._appstate_path = f'{self._appstate_path}.{key}'
+        node = DictNode(value, path=f'{self._appstate_path}.{key}')
+        #node._appstate_path = 
         for k, v in node.items():
             node.__setitem__(k, v, signal=False)
         return node
         
     def __getattribute__(self, name):
-        if name.startswith('_') or name in self.__dict__:
+        if (name.startswith('_') 
+            or name in self.__dict__ 
+            or name in DictNode.__dict__ 
+            or name in State.__dict__ 
+            or name in ['proxy_ref', 'fbind']):
             return super().__getattribute__(name)
 
         try:
             result = self[name]
         except KeyError:
-            return super().__getattribute__(name)
+            
+            if state._appstate_autocreate:
+                result = self._make_subnode(name, {}, signal=False)
+                self[name] = result
+                return result
+            else:
+                return super().__getattribute__(name)
         return result
 
+    def items(self):
+        return self._dict.items()
+        
     def __delitem__(self, key):
-        super().__delitem__(key)
+        self._dict.__delitem__(key)
         state.signal(f'{self._appstate_path}.{key}')
 
     def update(self, *a, **kw):
@@ -76,9 +108,70 @@ class DictNode(dict):
             self[key] = value
         return self[key]
     
+    def __getitem__(self, key):
+        #try:
+        return self._dict.__getitem__(key)
+        #except KeyError:
+            #if state._appstate_autocreate:
+                #result = self._make_subnode(key, {}, signal=False)
+                #self[key] = result
+                #return result
+            #else: 
+                #raise
+                
+    def __bool__(self):
+        return bool(self._dict)
+    
+    def __hash__(self, *a, **kw):
+        return hash(None)
+    
+    def __lt__(self, other):
+        return True
+    def __le__(self, other):
+        return True
+    def __eq__(self, other):
+        return self._dict.__eq__(other)
+    def __ne__(self, other):
+        return self._dict.__ne__(other)
+    def __gt__(self, other):
+        return True
+    def __ge__(self, other):
+        return True
+
+    def __contains__(self, *a, **kw):
+        return self._dict.__contains__(*a, **kw)
+    
+    def get(self, *a, **kw):
+        #print(f'get {a}, {kw}')
+        return self._dict.get(*a, **kw)
+    
+    def keys(self, *a, **kw):
+        return self._dict.keys(*a, **kw)
+    
+    def values(self, *a, **kw):
+        return self._dict.values(*a, **kw)
+    
+    #def setdefault(self, *a, **kw):
+        #return self._dict.setdefault(*a, **kw)
+    
+    def pop(self, *a, **kw):
+        return self._dict.pop(*a, **kw)
+    
+    def popitem(self, *a, **kw):
+        return self._dict.popitem(*a, **kw)
+    
+    def fromkeys(self, *a, **kw):
+        return self._dict.fromkeys(*a, **kw)
+    
+    def clear(self, *a, **kw):
+        return self._dict.clear(*a, **kw)
+    
+    def copy(self, *a, **kw):
+        return self._dict.copy(*a, **kw)
+    
     def __setitem__(self, key, value, signal=True):
         node = self._make_subnode(key, value, signal)
-        super().__setitem__(key, node)
+        self._dict.__setitem__(key, node)
         
         #print('setitem ', key, value)
         if signal:
@@ -86,7 +179,7 @@ class DictNode(dict):
             #print(f'signal {self._appstate_path}.{key}')
 
     def __setattr__(self, name, value):
-        if name.startswith('_appstate_'):
+        if name.startswith('_appstate_') or name == '_dict':
             return super().__setattr__(name, value)
         
         node = self._make_subnode(name, value)
@@ -98,7 +191,9 @@ class DictNode(dict):
         else:
             self.__setitem__(name, node)
             
-            
+    def __str__(self):
+        return self._dict.__str__()
+    
     def as_dict(self, full=False):
         result = {}
         for k, v in self.items():
@@ -118,14 +213,110 @@ class DictNode(dict):
                     result[k] = v
         return result
 
+    @property
+    def proxy_ref(self):
+        return self
+    
+    def bind(self, **kwargs):
+        pass
+
+    def unbind(self, **kwargs):
+        pass
+
+    #def fbind(self, childname, callback, args):
+        
+    def fbind(self, name, func, *largs, **kwargs):
+        '''See :meth:`EventDispatcher.fbind`.
+
+        .. note::
+
+            To keep backward compatibility with derived classes which may have
+            inherited from :class:`Observable` before, the
+            :meth:`fbind` method was added. The default implementation
+            of :meth:`fbind` is to create a partial
+            function that it passes to bind while saving the uid and largs/kwargs.
+            However, :meth:`funbind` (and :meth:`unbind_uid`) are fairly
+            inefficient since we have to first lookup this partial function
+            using the largs/kwargs or uid and then call :meth:`unbind` on
+            the returned function. It is recommended to overwrite
+            these methods in derived classes to bind directly for
+            better performance.
+
+            Similarly to :meth:`EventDispatcher.fbind`, this method returns
+            0 on failure and a positive unique uid on success. This uid can be
+            used with :meth:`unbind_uid`.
+
+        '''
+        #uid = self.bound_uid
+        ##self.bound_uid += 1
+        f = partial(func, *largs, **kwargs, instance=None, v=None)
+        #self.__fbind_mapping[name].append(((func, largs, kwargs), uid, f))
+        print(f"KV {self._appstate_path}.{name}")
+        state._appstate_lazy_kvlang_watchlist.append((f, [f'{self._appstate_path}.{name}']))
+        #try:
+            #self.bind(**{name: f})
+            #return uid
+        #except KeyError:
+            #return 0
+        return 1
+
+    def funbind(self, name, func, *largs, **kwargs):
+        '''See :meth:`fbind` and :meth:`EventDispatcher.funbind`.
+        '''
+        print(f'funbind {self} {name} {func}')
+        #cdef object f = None
+        #cdef tuple item, val = (func, largs, kwargs)
+        #cdef list bound = self.__fbind_mapping[name]
+
+        #for i, item in enumerate(bound):
+            #if item[0] == val:
+                #f = item[2]
+                #del bound[i]
+                #break
+
+        #if f is not None:
+            #try:
+                #self.unbind(**{name: f})
+            #except KeyError:
+                #pass
+
+    def unbind_uid(self, name, uid):
+        '''See :meth:`fbind` and :meth:`EventDispatcher.unbind_uid`.
+        '''
+        print(f'unbind_uid {self} {name} {uid}')
+        #cdef object f = None
+        #cdef tuple item
+        #cdef list bound = self.__fbind_mapping[name]
+        #if not uid:
+            #raise ValueError(
+                #'uid, {}, that evaluates to False is not valid'.format(uid))
+
+        #for i, item in enumerate(bound):
+            #if item[1] == uid:
+                #f = item[2]
+                #del bound[i]
+                #break
+
+        #if f is not None:
+            #try:
+                #self.unbind(**{name: f})
+            #except KeyError:
+                #pass
+        
+    def property(self, name, quiet=False):
+        return None
+
 
 class State(DictNode):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._appstate_autocreate = False
+        self._appstate_autopersist = False
         self._appstate_lazy_watchlist = []
+        self._appstate_lazy_kvlang_watchlist = []
         self._appstate_funcwatchlist = defaultdict(list)
         self._appstate_classwatchlist = defaultdict(list)
-        self._appstate_path = 'state'
+        #self._appstate_path = 'state'
 
     def call(self, f, *a, **kw):
         if not inspect.iscoroutinefunction(f):
@@ -143,6 +334,11 @@ class State(DictNode):
         #import ipdb; ipdb.sset_trace()
         #print(path, self._lazy_watchlist, dict(self._classwatchlist))
         path += '.'
+        for f, patterns in self._appstate_lazy_kvlang_watchlist:
+            module = None
+            for pat in patterns:
+                self._appstate_funcwatchlist[pat].append((module, f))
+                
         for f, patterns in self._appstate_lazy_watchlist:
             module = inspect.getmodule(f)
             #print(f.__qualname__, module, type(f.__qualname__))
@@ -240,4 +436,4 @@ class on:
         return wrapped
 
 
-state = State()
+state = State(path='state')
