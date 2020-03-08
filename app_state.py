@@ -21,13 +21,51 @@ from lockorator.asyncio import lock_or_exit
 from sniffio import current_async_library
 
 
-class DictNode(Mapping, Observable):
+class BaseNode:
+    def _make_subnode(self, key, value, signal=True):
+        if isinstance(value, (DictNode, ListNode)):
+            return value
+        
+        if isinstance(value, Mapping):
+            value = DictNode(value, path=f'{self._appstate_path}.{key}')
+            #value._appstate_path = 
+            for k, v in value.items():
+                value.__setitem__(k, v, signal=False)
+        elif isinstance(value, list):
+            value = ListNode(value, path=f'{self._appstate_path}.{key}')
+        return value
+    
+    
+class ListNode(list, BaseNode):
+    def __init__(self, *a, **kw):
+        self._appstate_path = kw.pop('path')
+        super().__init__(*a, **kw)
+        
+    def __iter__(self):
+        for idx, item in enumerate(list.__iter__(self)):
+            yield self._make_subnode(str(idx), item, signal=False)
+    
+    def as_list(self):
+        result = []
+        for item in list.__iter__(self):
+            if isinstance(item, DictNode):
+                result.append(item.as_dict())
+            elif isinstance(item, ListNode):
+                result.append(item.as_list())
+            else:
+                result.append(item)
+        return result
+    
+
+class DictNode(Mapping, Observable, BaseNode):
     def __init__(self, *a, **kw):
         self._appstate_path = kw.pop('path')
         self._dict = dict(*a, **kw)
         
     def __iter__(self):
         return self._dict.__iter__()
+    
+        #return self._make_subnode(key, item, signal=False)
     
     def __len__(self):
         return self._dict.__len__()
@@ -39,17 +77,6 @@ class DictNode(Mapping, Observable):
     def __repr__(self):
         return repr(self.as_dict(full=True))
     
-    def _make_subnode(self, key, value, signal=True):
-        if not isinstance(value, Mapping):
-            return value
-        if isinstance(value, DictNode):
-            return value
-        
-        node = DictNode(value, path=f'{self._appstate_path}.{key}')
-        #node._appstate_path = 
-        for k, v in node.items():
-            node.__setitem__(k, v, signal=False)
-        return node
         
     def __getattribute__(self, name):
         if (name.startswith('_') 
@@ -110,7 +137,8 @@ class DictNode(Mapping, Observable):
     
     def __getitem__(self, key):
         #try:
-        return self._dict.__getitem__(key)
+        item = self._dict.__getitem__(key)
+        return self._make_subnode(key, item, signal=False)
         #except KeyError:
             #if state._appstate_autocreate:
                 #result = self._make_subnode(key, {}, signal=False)
@@ -149,7 +177,9 @@ class DictNode(Mapping, Observable):
         return self._dict.keys(*a, **kw)
     
     def values(self, *a, **kw):
-        return self._dict.values(*a, **kw)
+        for key, value in self._dict.items(*a, **kw):
+            yield self._make_subnode(key, value, signal=False)
+                
     
     #def setdefault(self, *a, **kw):
         #return self._dict.setdefault(*a, **kw)
@@ -199,6 +229,8 @@ class DictNode(Mapping, Observable):
         for k, v in self.items():
             if isinstance(v, DictNode):
                 result[k] = v.as_dict(full=full)
+            elif isinstance(v, ListNode):
+                result[k] = v.as_list()
             else:
                 result[k] = v
         
