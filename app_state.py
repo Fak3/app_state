@@ -147,20 +147,27 @@ class DictNode(Mapping, Observable, BaseNode):
             #else: 
                 #raise
                 
+    def __eq__(self, other):
+        if isinstance(other, DictNode):
+            return self._dict.__eq__(other._dict)
+        return self._dict.__eq__(other)
+    
+    def __ne__(self, other):
+        if isinstance(other, DictNode):
+            return self._dict.__ne__(other._dict)
+        return self._dict.__ne__(other)
+    
     def __bool__(self):
         return bool(self._dict)
     
     def __hash__(self, *a, **kw):
-        return hash(None)
+        return hash(self._dict) if self._dict else hash(None)
     
     def __lt__(self, other):
         return True
     def __le__(self, other):
         return True
-    def __eq__(self, other):
-        return self._dict.__eq__(other)
-    def __ne__(self, other):
-        return self._dict.__ne__(other)
+    
     def __gt__(self, other):
         return True
     def __ge__(self, other):
@@ -238,7 +245,7 @@ class DictNode(Mapping, Observable, BaseNode):
             return result
         
         for k, v in self.__dict__.items():
-            if not k.startswith('_appstate_') and k.startswith('_'):
+            if not k.startswith('_appstate_') and not k == '_dict' and k.startswith('_'):
                 if isinstance(v, DictNode):
                     result[k] = v.as_dict(full=full)
                 else:
