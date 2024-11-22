@@ -4,7 +4,7 @@ import shelve
 from collections import defaultdict
 from copy import copy
 from functools import update_wrapper, partial
-
+from pathlib import Path
 
 try:
     import trio
@@ -21,6 +21,9 @@ class DictNode(dict):
         return repr(self.as_dict(full=True))
     
     def _make_subnode(self, key, value, signal=True):
+        # print(f'make {key=} {value=}')
+        # if isinstance(value, list):
+        #     return [self._make_subnode(n, x, signal=False) for n, x in enumerate(value)]
         if not isinstance(value, dict):
             return value
         if isinstance(value, DictNode):
@@ -33,18 +36,36 @@ class DictNode(dict):
         return node
         
     def __getattribute__(self, name):
+        # import ipdb; ipdb.sset_trace()
+        # print(name)
         if name.startswith('_') or name in self.__dict__:
             return super().__getattribute__(name)
 
         try:
             result = self[name]
         except KeyError:
-            return super().__getattribute__(name)
+            try:
+                return super().__getattribute__(name)
+            except:
+                # raise
+                return self._make_subnode(name, {}, signal=False)
+        # if isinstance(result, dict):
+        #     result = DictNode(result)
+        if isinstance(result, list):
+            result = [self._make_subnode(n, x, signal=False) for n, x in enumerate(result)]
+
         return result
 
     def __delitem__(self, key):
         super().__delitem__(key)
         state.signal(f'{self._appstate_path}.{key}')
+
+    def values(self):
+        for value in super().values():
+            if isinstance(value, dict):
+                yield DictNode(value)
+            else:
+                yield value
 
     def update(self, *a, **kw):
         changed = False
@@ -80,7 +101,7 @@ class DictNode(dict):
         node = self._make_subnode(key, value, signal)
         super().__setitem__(key, node)
         
-        #print('setitem ', key, value)
+        # print('setitem ', key, value)
         if signal:
             state.signal(f'{self._appstate_path}.{key}')
             #print(f'signal {self._appstate_path}.{key}')
@@ -98,7 +119,10 @@ class DictNode(dict):
         else:
             self.__setitem__(name, node)
             
-            
+    # def __reduce__(self):
+    #     return (dict, (dict(self),))
+
+
     def as_dict(self, full=False):
         result = {}
         for k, v in self.items():
@@ -127,6 +151,10 @@ class State(DictNode):
         self._appstate_classwatchlist = defaultdict(list)
         self._appstate_path = 'state'
 
+    def reset(self):
+        for key in list(self.keys()):
+            super().__delitem__(key)
+
     def call(self, f, *a, **kw):
         if not inspect.iscoroutinefunction(f):
             return f(*a, **kw)
@@ -139,9 +167,9 @@ class State(DictNode):
             return asyncio.create_task(f())
         
     def signal(self, path):
-        #print('sig')
+        # print(f'sig {path}')
         #import ipdb; ipdb.sset_trace()
-        #print(path, self._lazy_watchlist, dict(self._classwatchlist))
+        # print(path, self._lazy_watchlist, dict(self._classwatchlist))
         path += '.'
         for f, patterns in self._appstate_lazy_watchlist:
             module = inspect.getmodule(f)
@@ -171,15 +199,25 @@ class State(DictNode):
                         self.call(getattr(instance, name))
 
     
-    def autopersist(self, file, timeout=3, nursery=None):
-        self._appstate_shelve = shelve.open(file)
+    def autopersist(self, filename: str | Path, timeout=3, nursery=None):
+        self._appstate_shelve = shelve.open(str(filename))
         
+        # print(f'Starting autopersist')
+
         for k, v in self._appstate_shelve.get('state', {}).items():
+            # print(f'loading from storage {k=} {v=}')
             self.__setitem__(k, v, signal=False)
+
+        # print(f'Finished loading from storage')
         self.signal('state')
         
         @on('state')
         def persist():
+            if timeout == 0:
+                state._appstate_shelve['state'] = state.as_dict()
+                state._appstate_shelve.sync()
+                return
+
             try:
                 asynclib = current_async_library()
             except:
@@ -194,6 +232,22 @@ class State(DictNode):
                     nursery.start_soon(persist_delayed, timeout)
                 else:
                     asyncio.create_task(persist_delayed(timeout))
+
+
+    def reload(self, filename: str | Path):
+        if self._appstate_shelve:
+            self._appstate_shelve.close()
+
+        self._appstate_shelve = shelve.open(str(filename))
+
+        # print(f'Starting reload')
+
+        for k, v in self._appstate_shelve.get('state', {}).items():
+            # print(f'loading from storage {k=} {v=}')
+            self.__setitem__(k, v, signal=False)
+
+        # print(f'Finished loading from storage')
+        self.signal('state')
 
 
 @lock_or_exit()

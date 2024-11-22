@@ -1,0 +1,51 @@
+[project]
+name = "app_state"
+version = "0.6"
+description = "app_state"
+authors = [
+    {name = "Evstifeev Roman", email = "someuniquename@gmail.com"},
+    {name = "Roman Evstifeev", email = "someuniquename@gmail.com"},
+]
+dependencies = [
+    "lockorator",
+    "sniffio",
+    "getinstance>=0.7"
+]
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Android",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
+
+[tool.pdm.dev-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio>=0.24",
+    "pytest-env==0.6.2",
+    "pytest-mock==1.10.4",
+    "pytest-remove-stale-bytecode==4.0",
+]
+debug = [
+    "ipdb>=0.13.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/Fak3/app_state"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm]
+distribution = true
