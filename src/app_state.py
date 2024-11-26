@@ -4,6 +4,7 @@ import shelve
 from collections import defaultdict
 from copy import copy
 from functools import update_wrapper, partial
+from collections.abc import Callable, Generator, Coroutine
 from pathlib import Path
 
 try:
@@ -58,7 +59,7 @@ class DictNode(dict):
 
     def __delitem__(self, key):
         super().__delitem__(key)
-        state.signal(f'{self._appstate_path}.{key}')
+        on.trigger(f'{self._appstate_path}.{key}')
 
     def values(self):
         for value in super().values():
@@ -90,7 +91,9 @@ class DictNode(dict):
                 self.__setitem__(key, kw[key], signal=False)
                 
         if changed:
-            state.signal(f'{self._appstate_path}')
+            on.trigger(f'{self._appstate_path}')
+        # else:
+        #     print(f'Not changed {self._appstate_path}')
         
     def setdefault(self, key, value):
         if key not in self:
@@ -103,7 +106,7 @@ class DictNode(dict):
         
         # print('setitem ', key, value)
         if signal:
-            state.signal(f'{self._appstate_path}.{key}')
+            on.trigger(f'{self._appstate_path}.{key}')
             #print(f'signal {self._appstate_path}.{key}')
 
     def __setattr__(self, name, value):
@@ -114,7 +117,7 @@ class DictNode(dict):
         
         if name.startswith('_'):
             super().__setattr__(name, node)
-            state.signal(f'{self._appstate_path}.{name}')
+            on.trigger(f'{self._appstate_path}.{name}')
             #print(f'signal {self._appstate_path}.{name}')
         else:
             self.__setitem__(name, node)
@@ -144,61 +147,17 @@ class DictNode(dict):
 
 
 class State(DictNode):
-    def __init__(self):
-        super().__init__()
-        self._appstate_lazy_watchlist = []
-        self._appstate_funcwatchlist = defaultdict(list)
-        self._appstate_classwatchlist = defaultdict(list)
-        self._appstate_path = 'state'
+    """
+    Root node, singleton.
+    """
+
+    _appstate_path = 'state'
 
     def reset(self):
         for key in list(self.keys()):
             super().__delitem__(key)
 
-    def call(self, f, *a, **kw):
-        if not inspect.iscoroutinefunction(f):
-            return f(*a, **kw)
-        
-        if current_async_library() == 'trio':
-            if not getattr(state, '_nursery'):
-                raise Exception('Provide state._nursery for async task to run.')
-            state._nursery.start_soon(f)
-        else:
-            return asyncio.create_task(f())
-        
-    def signal(self, path):
-        # print(f'sig {path}')
-        #import ipdb; ipdb.sset_trace()
-        # print(path, self._lazy_watchlist, dict(self._classwatchlist))
-        path += '.'
-        for f, patterns in self._appstate_lazy_watchlist:
-            module = inspect.getmodule(f)
-            #print(f.__qualname__, module, type(f.__qualname__))
-            cls = getattr(module, f.__qualname__.split('.')[0])
 
-            if cls and hasattr(cls, f.__name__):
-                for pat in patterns:
-                    self._appstate_classwatchlist[pat].append((cls, f))
-            else:
-                for pat in patterns:
-                    self._appstate_funcwatchlist[pat].append((module, f))
-        self._appstate_lazy_watchlist = []
-
-        for watcher_pat in self._appstate_funcwatchlist:
-            watcher = watcher_pat + '.'
-            if watcher.startswith(path) or path.startswith(watcher):
-                for module, f in self._appstate_funcwatchlist[watcher_pat]:
-                    self.call(f)
-
-        for watcher_pat in copy(self._appstate_classwatchlist):
-            watcher = watcher_pat + '.'
-            if watcher.startswith(path) or path.startswith(watcher):
-                for cls, f in self._appstate_classwatchlist[watcher_pat]:
-                    name = f.__qualname__.split('.')[-1]
-                    for instance in cls._appstate_instances.all():
-                        self.call(getattr(instance, name))
-
-    
     def autopersist(self, filename: str | Path, timeout=3, nursery=None):
         self._appstate_shelve = shelve.open(str(filename))
         
@@ -209,7 +168,7 @@ class State(DictNode):
             self.__setitem__(k, v, signal=False)
 
         # print(f'Finished loading from storage')
-        self.signal('state')
+        on.trigger('state')
         
         @on('state')
         def persist():
@@ -247,7 +206,7 @@ class State(DictNode):
             self.__setitem__(k, v, signal=False)
 
         # print(f'Finished loading from storage')
-        self.signal('state')
+        on.trigger('state')
 
 
 @lock_or_exit()
@@ -261,37 +220,129 @@ async def persist_delayed(timeout):
     state._appstate_shelve.sync()
         
 
-class FunctionWrapper:
+def maybe_async(callable: Coroutine | Callable):
     """
-    If wrapped callable is a regular function, this wrapper does nothing.
-    If wrapped callable is a method, it will ensure that owner class has
-    a member `_appstate_instances` which is an InstanceManager.
+    Execute sync callable, or schedule async task.
     """
-    def __init__(self, f):
-        self.f = f
-        update_wrapper(self, f)
+    if not inspect.iscoroutinefunction(callable):
+        return callable()
+
+    if current_async_library() == 'trio':
+        if not getattr(state, '_nursery'):
+            raise Exception('Provide state._nursery for async task to run.')
+        state._nursery.start_soon(callable)
+    else:
+        return asyncio.create_task(callable())
+
+
+class signal_handler:
+    """
+    Decorator of a function or method. Pass-through calls to the wrapped callable.
+    Only used internally by the @on('state.foo') decorator, defined below.
+
+    Provides deliver() method to be called by on.trigger() when state changes.
+
+    If wrapped callable is a method, __set_name__() ensures that owner class
+    has a member `_appstate_instances` which is an getinstance.InstanceManager.
+    When the state changes, deliver() calls the method for each instance of the
+    owner class.
+
+    """
+
+    def __init__(self, callable: Callable):
+        self.callable = callable
+        self.owner_class = None
+        update_wrapper(self, callable)
 
     def __call__(self, *a, **kw):
-        return self.f(*a, **kw)
+        return self.callable(*a, **kw)
         
-    def __set_name__(self, owner, name):
+    def __set_name__(self, owner: type, name: str):
+        """
+        Called when (if) this callable is assigned as a method of a class.
+        If that class (owner) does not have `_appstate_instances` member, then
+        create it.
+        """
         if not hasattr(owner, '_appstate_instances'):
             owner._appstate_instances = InstanceManager(owner, '_appstate_instances')
-        setattr(owner, self.f.__name__, self.f)
+
+        setattr(owner, self.callable.__name__, self.callable)
+        self.owner_class = owner
+
+    def deliver(self):
+        """
+        Called by on.trigger() when state changes. Execute wrapped callable
+        or call a method of all owner class instances. If async, schedule
+        a task.
+        """
+        if self.owner_class:
+            # Call method of every existing instance of an owner class.
+            for instance in self.owner_class._appstate_instances.all():
+                maybe_async(getattr(instance, self.callable.__name__))
+        else:
+            maybe_async(self.callable)
 
 
 class on:
     """
-    Decorator. The decorated function or method will be called each time when any 
-    of the provided state patterns changes.
+    Decorator of a function or method. Decorated callable is converted
+    into signal_handler(), defined above. This signal handler will be
+    triggered each time when state node matching any of the provided
+    state path patterns changes.
+
+    Usage:
+
+        @on('state.username', 'state.something_else')
+        def on_username_changed():
+            print(f"New username = {state.username}")
+
     """
-    def __init__(self, *patterns):
+
+    # Watchlist mapping 'state.foo' -> list of callables
+    handlers: dict[str, list[signal_handler]] = defaultdict(list)
+
+    def __init__(self, *patterns: str):
+        """ Set state path patterns to react on. """
         self.patterns = patterns
 
-    def __call__(self, f):
-        wrapped = FunctionWrapper(f)
-        state._appstate_lazy_watchlist.append((f, self.patterns))
-        return wrapped
+
+    def __call__(self, callable: Callable) -> signal_handler:
+        """
+        Decorate the given callable, converting it into signal_handler.
+
+        If callable is a class method, signal_handler ensures owner class has
+        `_appstate_instances = getinstance.InstanceManager()`. This
+        instance manager will be required to call the method of every
+        class instance upon the state change.
+
+        Add this signal handler to the watchlist to react on state
+        changes with given state path patterns.
+        """
+        handler = signal_handler(callable)
+
+        for pattern in self.patterns:
+            # Ensure path pattern ends with a dot. Enables simple
+            # substring path matching in on.match(), distinguishing
+            # state.foo from state.foobar
+            on.handlers[pattern + '.'].append(handler)
+
+        return handler
+
+
+    @staticmethod
+    def trigger(path: str) -> None:
+        for handler in on.match(path + '.'):
+            handler.deliver()
+
+    @staticmethod
+    def match(path: str) -> Generator[signal_handler]:
+        for pattern in list(on.handlers):
+            if pattern.startswith(path):
+                # state.foo.bar. handler triggered by change of state.foo.
+                yield from on.handlers[pattern]
+            elif path.startswith(pattern):
+                # state.foo. handler triggered by change of state.foo.bar.
+                yield from on.handlers[pattern]
 
 
 state = State()
