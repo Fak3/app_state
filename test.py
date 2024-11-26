@@ -6,9 +6,17 @@ import app_state
 
 
 class Widget:
-    @on('state.regions')
+    @on('state.countries')
     def do_stuff(self):
-        print(state.regions)
+        pass
+
+
+@on('state.countries.AU')
+def on_au():
+    australia_handler()
+
+def australia_handler():
+    pass
 
 
 @pytest.fixture(autouse=True)
@@ -18,16 +26,19 @@ def clean_state():
 
 def test_update(mocker):
     widget = Widget()
-    spy = mocker.spy(widget, 'do_stuff')
 
-    state.regions = None
-    state.regions = {'AU': 4}
-    state.regions['RU'] = 5
-    state.regions.US = 6
+    mocker.spy(widget, 'do_stuff')
+    mocker.spy(__import__(__name__), 'australia_handler')
+
+    state.countries = None       # triggers state.countries.AU
+    state.countries = {'AU': 4}  # triggers state.countries.AU
+    state.countries['RU'] = 5
+    state.countries.US = 6
     
     assert widget.do_stuff.call_count == 4
+    assert australia_handler.call_count == 2
     
-    state.regions.update({'RU': 6, 'US': 8})
+    state.countries.update({'RU': 6, 'US': 8})
     
     assert widget.do_stuff.call_count == 5
     
