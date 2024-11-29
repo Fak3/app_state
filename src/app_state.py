@@ -1,11 +1,13 @@
-import inspect
 import asyncio
+import inspect
+import logging
 import shelve
 from collections import defaultdict
 from copy import copy
 from functools import update_wrapper, partial
 from collections.abc import Callable, Generator, Coroutine
 from pathlib import Path
+from textwrap import shorten
 
 try:
     import trio
@@ -16,6 +18,8 @@ from getinstance import InstanceManager
 from lockorator.asyncio import lock_or_exit
 from sniffio import current_async_library
 
+
+logger = logging.getLogger(__name__)
 
 class DictNode(dict):
     def __repr__(self):
@@ -172,6 +176,9 @@ class State(DictNode):
         
         @on('state')
         def persist():
+            logger.debug('Saving state:\n{items}'.format(items="\n".join(
+                f'{key}: {shorten(str(value), 60)}' for key, value in state.items()
+            )))
             if timeout == 0:
                 state._appstate_shelve['state'] = state.as_dict()
                 state._appstate_shelve.sync()
