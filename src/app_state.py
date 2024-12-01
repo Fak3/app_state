@@ -61,7 +61,7 @@ if kivy:
             return self.dict_node.get(*a)
         def values(self, *a):
             return self.dict_node.values(*a)
-`
+
         def property(self, name, quiet=False):
             return None
 
