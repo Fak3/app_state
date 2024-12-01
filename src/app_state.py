@@ -10,6 +10,11 @@ from pathlib import Path
 from textwrap import shorten
 
 try:
+    import kivy.event
+except:
+    kivy = False
+
+try:
     import trio
 except ImportError:
     pass
@@ -21,28 +26,116 @@ from sniffio import current_async_library
 
 logger = logging.getLogger(__name__)
 
+if kivy:
+    class ObservableDict(kivy.event.Observable):
+        """
+        Wrapper around DictNode. Provides fbind() method which
+        lets kivy.lang.Builder to listen to state changes.
+        """
+
+        def __init__(self, dict_node):
+            # if dict_node._appstate_path.startswith('state.proxy_ref'):
+            #     logger.debug(dict_node._appstate_path)
+            self.__dict__['dict_node'] = dict_node
+            super().__init__()
+
+
+        def __setattr__(self, name, value):
+            # logger.debug(f"setattr {name} = {value}")
+            self.dict_node.__setattr__(name, value)
+
+        def __setitem__(self, name, value, signal=True):
+            # logger.debug(f"{name=}")
+            # super().__setattr__(name, value)
+            self.dict_node.__setitem__(name, value, signal)
+
+        def __repr__(self):
+            # return str(self.dict_node._appstate_path) #+ ' ' + self.dict_node.__repr__()
+            return self.dict_node.__repr__()
+
+        def __str__(self):
+            # return str(self.dict_node._appstate_path) #+ ' ' + self.dict_node.__repr__()
+            return str(self.dict_node) if self.dict_node else ''
+
+        def get(self, *a):
+            return self.dict_node.get(*a)
+        def values(self, *a):
+            return self.dict_node.values(*a)
+`
+        def property(self, name, quiet=False):
+            return None
+
+        def __contains__(self, *a):
+            return self.dict_node.__contains__(*a)
+
+        def __getitem__(self, *a):
+            # logger.debug(f"__getitem__ {a=}")
+            return self.dict_node.__getitem__(*a)
+
+        def update(self, *a, **kw):
+            return self.dict_node.update(*a, **kw)
+
+        def setdefault(self, *a, **kw):
+            return self.dict_node.setdefault(*a, **kw)
+
+        def __getattribute__(self, val):
+            # logger.debug(f"getattr {val=}")
+            if val in ['__dict__', 'proxy_ref']:
+                return super().__getattribute__(val)
+            if val != 'dict_node' and 'dict_node' in self.__dict__ and val in self.dict_node:
+                return self.dict_node.__getattribute__(val)
+            try:
+                return super().__getattribute__(val)
+            except:
+                return self.dict_node.__getattribute__(val)
+
+        def __reduce__(self):
+            return (dict, (dict(self.dict_node),))
+
+        def __eq__(self, other):
+            return self.dict_node == other
+
+        def __bool__(self):
+            return bool(self.dict_node)
+
+        def fbind(self, name, func, args, **kwargs):
+            """ Called by kivy lang builder to bind state node. """
+            element, key, value, rule, idmap = args
+            logger.debug(f"{self.dict_node._appstate_path}.{name} {rule=}")
+
+            @on(f"{self.dict_node._appstate_path}.{name}")
+            def x():
+                # logger.debug(f"Calling {self.dict_node._appstate_path}.{name}")
+                func(args, None, None)
+
+
 class DictNode(dict):
     def __repr__(self):
         return repr(self.as_dict(full=True))
-    
+
+    def __str__(self):
+        return str(self.as_dict(full=True))
+
     def _make_subnode(self, key, value, signal=True):
-        # print(f'make {key=} {value=}')
-        # if isinstance(value, list):
-        #     return [self._make_subnode(n, x, signal=False) for n, x in enumerate(value)]
+        # logger.debug(f'make {self._appstate_path}.{key} {value=}')
         if not isinstance(value, dict):
             return value
         if isinstance(value, DictNode):
+            if kivy:
+                return ObservableDict(node)
             return value
-        
+
         node = DictNode(value)
         node._appstate_path = f'{self._appstate_path}.{key}'
-        for k, v in node.items():
+        for k, v in list(node.items()):
             node.__setitem__(k, v, signal=False)
+
+        if kivy:
+            return ObservableDict(node)
         return node
-        
+
     def __getattribute__(self, name):
-        # import ipdb; ipdb.sset_trace()
-        # print(name)
+        # logger.debug(name)
         if name.startswith('_') or name in self.__dict__:
             return super().__getattribute__(name)
 
@@ -57,7 +150,7 @@ class DictNode(dict):
         # if isinstance(result, dict):
         #     result = DictNode(result)
         if isinstance(result, list):
-            result = [self._make_subnode(n, x, signal=False) for n, x in enumerate(result)]
+            result = [self._make_subnode('_list', x, signal=False) for x in result]
 
         return result
 
@@ -81,51 +174,87 @@ class DictNode(dict):
                 for key in a[0]:
                     if key not in self or not self[key] == a[0][key]:
                         changed = True
-                        #print(key, a[0][key])
+                        #logger.debug(key, a[0][key])
                         self.__setitem__(key, a[0][key], signal=False)
             else:
                 for k, v in a[0]:
                     if k not in self or not self[k] == v:
                         changed = True
                         self.__setitem__(k, v, signal=False)
-                    
+
         for key in kw:
             if key not in self or not self[key] == kw[key]:
                 changed = True
                 self.__setitem__(key, kw[key], signal=False)
-                
+
         if changed:
             on.trigger(f'{self._appstate_path}')
         # else:
-        #     print(f'Not changed {self._appstate_path}')
-        
+        #     logger.debug(f'Not changed {self._appstate_path}')
+
     def setdefault(self, key, value):
         if key not in self:
             self[key] = value
         return self[key]
-    
+
     def __setitem__(self, key, value, signal=True):
+
+        # logger.debug(f'  __setitem__ {self._appstate_path}.{key} = {value}')
+
+        if '_list' in self._appstate_path.split('.'):
+            node = self._make_subnode(key, value, signal)
+            return super().__setitem__(key, node)
+
+        ancestor = state
+        for path in self._appstate_path.split('.')[1:]:
+            # logger.debug(f"{ancestor._appstate_path=} {path=}")
+            if path in ancestor:
+                if kivy:
+                    if isinstance(ancestor[path], ObservableDict):
+                        node = ancestor[path].dict_node
+                    else:
+                        node = None
+                else:
+                    node = ancestor[path]
+                if isinstance(node, dict):
+                    # logger.debug(f'already exists {ancestor._appstate_path}.{path} ')
+                    ancestor = ancestor[path]
+                    continue
+
+            # logger.debug(f'setting {ancestor._appstate_path}.{path} = {{}}')
+            ancestor.__setitem__(path, ancestor._make_subnode(path, {}), signal=False)
+            ancestor = ancestor[path]
+
+
+        name = self._appstate_path.split('.')[-1]
+        # logger.debug(f'my own {name=}')
+        # ancestor.__setitem__(name, self, signal=False)
         node = self._make_subnode(key, value, signal)
-        super().__setitem__(key, node)
-        
-        # print('setitem ', key, value)
+        if kivy:
+            super(DictNode, ancestor.dict_node).__setitem__(key, node)
+        else:
+            super(DictNode, ancestor).__setitem__(key, node)
+        # ancestor.__setitem__(key, node, False)
+
+        # logger.debug(f'  __setitem__ {self._appstate_path}.{key} = {value} finished\n\
+        #              curstate {state.as_dict()}\n')
         if signal:
             on.trigger(f'{self._appstate_path}.{key}')
-            #print(f'signal {self._appstate_path}.{key}')
+            #logger.debug(f'signal {self._appstate_path}.{key}')
 
     def __setattr__(self, name, value):
         if name.startswith('_appstate_'):
             return super().__setattr__(name, value)
-        
+
         node = self._make_subnode(name, value)
-        
+
         if name.startswith('_'):
             super().__setattr__(name, node)
             on.trigger(f'{self._appstate_path}.{name}')
-            #print(f'signal {self._appstate_path}.{name}')
+            #logger.debug(f'signal {self._appstate_path}.{name}')
         else:
             self.__setitem__(name, node)
-            
+
     # def __reduce__(self):
     #     return (dict, (dict(self),))
 
@@ -137,10 +266,10 @@ class DictNode(dict):
                 result[k] = v.as_dict(full=full)
             else:
                 result[k] = v
-        
+
         if not full:
             return result
-        
+
         for k, v in self.__dict__.items():
             if not k.startswith('_appstate_') and k.startswith('_'):
                 if isinstance(v, DictNode):
@@ -164,16 +293,16 @@ class State(DictNode):
 
     def autopersist(self, filename: str | Path, timeout=3, nursery=None):
         self._appstate_shelve = shelve.open(str(filename))
-        
-        # print(f'Starting autopersist')
+
+        # logger.debug(f'Starting autopersist')
 
         for k, v in self._appstate_shelve.get('state', {}).items():
-            # print(f'loading from storage {k=} {v=}')
+            # logger.debug(f'loading from storage {k=} {v=}')
             self.__setitem__(k, v, signal=False)
 
-        # print(f'Finished loading from storage')
+        # logger.debug(f'Finished loading from storage')
         on.trigger('state')
-        
+
         @on('state')
         def persist():
             logger.debug('Saving state:\n{items}'.format(items="\n".join(
@@ -206,13 +335,13 @@ class State(DictNode):
 
         self._appstate_shelve = shelve.open(str(filename))
 
-        # print(f'Starting reload')
+        # logger.debug(f'Starting reload')
 
         for k, v in self._appstate_shelve.get('state', {}).items():
-            # print(f'loading from storage {k=} {v=}')
+            # logger.debug(f'loading from storage {k=} {v=}')
             self.__setitem__(k, v, signal=False)
 
-        # print(f'Finished loading from storage')
+        # logger.debug(f'Finished loading from storage')
         on.trigger('state')
 
 
@@ -222,10 +351,10 @@ async def persist_delayed(timeout):
         await trio.sleep(timeout)
     else:
         await asyncio.sleep(timeout)
-    #print('PERSIST', state)
+    #logger.debug('PERSIST', state)
     state._appstate_shelve['state'] = state.as_dict()
     state._appstate_shelve.sync()
-        
+
 
 def maybe_async(callable: Coroutine | Callable):
     """
@@ -263,7 +392,7 @@ class signal_handler:
 
     def __call__(self, *a, **kw):
         return self.callable(*a, **kw)
-        
+
     def __set_name__(self, owner: type, name: str):
         """
         Called when (if) this callable is assigned as a method of a class.
@@ -352,4 +481,7 @@ class on:
                 yield from on.handlers[pattern]
 
 
-state = State()
+if kivy:
+    state = ObservableDict(State())
+else:
+    state = State()
