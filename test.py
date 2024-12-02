@@ -24,6 +24,19 @@ def clean_state():
     state.reset()
 
 
+def test_assign_with_intermediate_node(mocker):
+    assert state == {}
+    state.countries.RU.data = 3
+    assert state == {'countries': {'RU': {'data': 3}}}
+
+    state.regions = [{'ru_77': {'data': 'yes'}}]
+    assert state['regions'] == [{'ru_77': {'data': 'yes'}}]
+    assert state == {
+        'countries': {'RU': {'data': 3}},
+        'regions': [{'ru_77': {'data': 'yes'}}]
+    }
+
+
 def test_update(mocker):
     widget = Widget()
 
