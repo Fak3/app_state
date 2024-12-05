@@ -7,7 +7,7 @@ import app_state
 
 class Widget:
     @on('state.countries')
-    def do_stuff(self):
+    def on_countries(self):
         pass
 
 
@@ -21,6 +21,11 @@ def australia_handler():
 
 @pytest.fixture(autouse=True)
 def clean_state():
+    # Stop autopersist
+    for handler in list(on.handlers['state.']):
+        if handler.__qualname__ == 'State.autopersist.<locals>.persist':
+            on.handlers['state.'].remove(handler)
+
     state.reset()
 
 
@@ -40,20 +45,26 @@ def test_assign_with_intermediate_node(mocker):
 def test_update(mocker):
     widget = Widget()
 
-    mocker.spy(widget, 'do_stuff')
+    mocker.spy(widget, 'on_countries')
     mocker.spy(__import__(__name__), 'australia_handler')
 
-    state.countries = None       # triggers state.countries.AU
-    state.countries = {'AU': 4}  # triggers state.countries.AU
+    state.countries = None
+    assert widget.on_countries.call_count == 1
+    assert australia_handler.call_count == 1
+
+    state.countries = {'AU': 4}
+    assert widget.on_countries.call_count == 2
+    assert australia_handler.call_count == 2
+
     state.countries['RU'] = 5
     state.countries.US = 6
-    
-    assert widget.do_stuff.call_count == 4
+
+    assert widget.on_countries.call_count == 4
     assert australia_handler.call_count == 2
     
     state.countries.update({'RU': 6, 'US': 8})
     
-    assert widget.do_stuff.call_count == 5
+    assert widget.on_countries.call_count == 5
     
 
 def test_autopersist(tmp_path: Path):
@@ -77,5 +88,37 @@ def test_autopersist(tmp_path: Path):
     ]}
 
 
+def test_get():
+    state.countries = {'AU': {'questions': [ {'id': 1} ]}}
+
+    au = state.countries.AU
+
+    assert au._appstate_path == 'state.countries.AU'
+    assert state.countries.AU == au
+
+    au.answers = 123
+    assert state.countries.AU.answers == 123
+
+    assert state == {'countries' : {'AU': {
+        'questions': [  {'id': 1}, ],
+        'answers': 123
+    }}}
+
+    au = state.countries['AU']
+
+    au.answers = 'none'
+    assert state.countries.AU.answers == 'none'
+
+    # TODO: lists don't get updated yet
+    au.questions.append(456)
+
+    au = state.countries.get('AU')
+
+    au.questions.append('789')
+
+    assert state == {'countries' : {'AU': {
+        'questions': [  {'id': 1}, ],
+        'answers': 'none'
+    }}}
 
 
