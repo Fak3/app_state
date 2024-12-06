@@ -2,7 +2,8 @@ import asyncio
 import inspect
 import logging
 import shelve
-from collections import defaultdict
+from collections import defaultdict, UserDict
+from collections.abc import Mapping
 from copy import copy
 from functools import update_wrapper, partial
 from collections.abc import Callable, Generator, Coroutine
@@ -27,31 +28,61 @@ from sniffio import current_async_library
 logger = logging.getLogger(__name__)
 
 
-class DictNode(dict):
+if kivy:
+    class BaseDict(kivy.event.Observable, UserDict):
+        """
+        Provides fbind() method which lets kivy.lang.Builder to
+        listen to state changes.
+        """
+
+        def property(self, name, quiet=False):
+            """ kivy builder requires this method. """
+            return None
+
+        # def __reduce__(self):
+        #     """ Persist as a regular dict """
+        #     return (dict, (self.data,))
+
+        def fbind(self, name, func, args, **kwargs):
+            """ Called by kivy lang builder to bind state node. """
+            element, key, value, rule, idmap = args
+            logger.debug(f"kivy called fbind {self._appstate_path}.{name} {rule=}")
+
+            @on(f"{self._appstate_path}.{name}")
+            def notify_kivy():
+                # logger.debug(f"Calling {self._appstate_path}.{name}")
+                func(args, None, None)
+
+else:
+    BaseDict = UserDict
+
+
+class DictNode(BaseDict):
+    def __init__(self, *args, path, **kwargs):
+        self._appstate_path = path
+
+        self.data = {}
+
+        if args:
+            self.update(args[0], signal=False)
+        if kwargs:
+            self.update(kwargs, signal=False)
+
     def __repr__(self):
         return repr(self.as_dict(full=True))
 
     def __str__(self):
-        return str(self.as_dict(full=True))
+        return str(self.data) if self.data else ''
 
     def _make_subnode(self, key, value):
-        # logger.debug(f'make {self._appstate_path}.{key} {value=}')
-        if not isinstance(value, dict):
-            # logger.debug(f'  already dict')
-            return value
+        # logger.debug(f'make {self._appstate_path}.{key} {value=} {type(value)=}')
         if isinstance(value, DictNode):
-            # logger.debug(f'  already Dictnode')
-            if kivy:
-                return ObservableDict(node)
+            # logger.debug(f'  already DictNode')
+            return value
+        if not isinstance(value, Mapping):
             return value
 
-        # logger.debug(f'  Make real {self._appstate_path}.{key} {value=}')
-        node = DictNode(value)
-        node._appstate_path = f'{self._appstate_path}.{key}'
-
-        if kivy:
-            return ObservableDict(node)
-        return node
+        return DictNode(value, path=f'{self._appstate_path}.{key}')
 
     def __getitem__(self, name):
         # logger.debug(f'__getitem__ {self._appstate_path}.{name}')
@@ -62,9 +93,8 @@ class DictNode(dict):
         return self._make_subnode(key, super().get(key, *args, **kwargs))
 
     def __getattribute__(self, name):
-        # logger.debug(name)
         # logger.debug(f'__getattribute__ {name}')
-        if name.startswith('_') or name in dict.__dict__ or name in DictNode.__dict__:
+        if name.startswith('_') or name == 'data' or name in DictNode.__dict__  or name in dict.__dict__:
             # logger.debug(f'__getattribute__ {name} direct')
             return super().__getattribute__(name)
 
@@ -75,10 +105,13 @@ class DictNode(dict):
             try:
                 return super().__getattribute__(name)
             except:
-                # raise
+                # Support access of non-existent chain of keys:
+                # >>> assert state.some.node.which.dont.exist == {}
+
+                # Questionable feature, but simplifies some cases
+                # especially with the limited kvlang syntax.
                 return self._make_subnode(name, {})
-        # if isinstance(result, dict):
-        #     result = DictNode(result)
+
         if isinstance(result, list):
             result = [self._make_subnode('_list', x) for x in result]
 
@@ -90,12 +123,14 @@ class DictNode(dict):
 
     def values(self):
         for value in super().values():
-            if isinstance(value, dict):
+            if isinstance(value, Mapping):
                 yield DictNode(value)
             else:
                 yield value
 
-    def update(self, *a, **kw):
+    def update(self, *a, signal=True, **kw):
+        # logger.debug(f'update {a}, {kw}')
+
         changed = False
         if len(a) > 1:
             raise TypeError(f'update expected at most 1 arguments, got {len(a)}')
@@ -103,6 +138,7 @@ class DictNode(dict):
             if hasattr(a[0], 'keys'):
                 for key in a[0]:
                     if key not in self or not self[key] == a[0][key]:
+                        # logger.debug(f'update {key} {a[0][key]}')
                         changed = True
                         #logger.debug(key, a[0][key])
                         self.__setitem__(key, a[0][key], signal=False)
@@ -117,10 +153,12 @@ class DictNode(dict):
                 changed = True
                 self.__setitem__(key, kw[key], signal=False)
 
-        if changed:
+        if changed and signal:
             on.trigger(f'{self._appstate_path}')
+            # logger.debug(f'UPDATE: changed {self._appstate_path}')
         # else:
         #     logger.debug(f'Not changed {self._appstate_path}')
+
 
     def setdefault(self, key, value):
         if key not in self:
@@ -128,53 +166,45 @@ class DictNode(dict):
         return self[key]
 
     def __setitem__(self, key, value, signal=True):
-
-        # logger.debug(f'  __setitem__ {self._appstate_path}.{key} = {value}')
+        # logger.debug(f'  __setitem__ {self._appstate_path}[{key}] = {value}')
 
         if '_list' in self._appstate_path.split('.'):
             node = self._make_subnode(key, value)
             return super().__setitem__(key, node)
 
         ancestor = state
-        for path in self._appstate_path.split('.')[1:]:
+        for path in self._appstate_path.split('.')[1:-1]:
+            # For each my ancestor, ensure it existis in state. Create new
+            # empty node if not.
+
             # logger.debug(f"{ancestor._appstate_path=} {path=}")
             if path in ancestor:
-                # logger.debug(f'{path} is already in {ancestor._appstate_path}')
-                if isinstance(ancestor[path], (dict, ObservableDict)):
+                # logger.debug(f'!!     {path} is already in {ancestor._appstate_path}')
+                if isinstance(ancestor[path], DictNode):
                     # logger.debug(f'already exists {ancestor._appstate_path}.{path} ')
                     ancestor = ancestor[path]
                     continue
                 # else:
-                #     logger.debug(f"{path} exists but it's not a dict node")
+                    # logger.debug(f"{path} exists but it's not a dict node")
 
             # logger.debug(f'setting {ancestor._appstate_path}.{path} = {{}}')
             ancestor.__setitem__(path, ancestor._make_subnode(path, {}), signal=False)
             ancestor = ancestor[path]
 
+        my_name = self._appstate_path.split('.')[-1]
+        if not my_name == 'state':
+            # I am not the root (self != state). Ensure that ancestor contains myself
+            ancestor.__setitem__(my_name, self, signal=False)
 
-        name = self._appstate_path.split('.')[-1]
-        # logger.debug(f'my own {name=}')
-        # ancestor.__setitem__(name, self, signal=False)
-        node = self._make_subnode(key, value)
-        if kivy:
-            super(DictNode, ancestor.dict_node).__setitem__(key, node)
-        else:
-            super(DictNode, ancestor).__setitem__(key, node)
+        # Finally, create node from given value
+        super().__setitem__(key, self._make_subnode(key, value))
 
-        if isinstance(node, (dict, ObservableDict)):
-            for k, v in list(node.items()):
-                node.__setitem__(k, v, signal=False)
-
-        # ancestor.__setitem__(key, node, False)
-
-        # logger.debug(f'  __setitem__ {self._appstate_path}.{key} = {value} finished\n\
-        #              curstate {state.as_dict()}\n')
         if signal:
             on.trigger(f'{self._appstate_path}.{key}')
-            #logger.debug(f'signal {self._appstate_path}.{key}')
+
 
     def __setattr__(self, name, value):
-        if name.startswith('_appstate_'):
+        if name.startswith('_appstate_') or name == 'data':
             return super().__setattr__(name, value)
 
         # logger.debug(f'__setattr__ {self._appstate_path}.{name} = {value}')
@@ -186,9 +216,7 @@ class DictNode(dict):
             #logger.debug(f'signal {self._appstate_path}.{name}')
         else:
             self.__setitem__(name, node)
-
-    # def __reduce__(self):
-    #     return (dict, (dict(self),))
+        # logger.debug(f'END __setattr__ {self._appstate_path}.{name} = {value}')
 
 
     def as_dict(self, full=False):
@@ -211,98 +239,10 @@ class DictNode(dict):
         return result
 
 
-if kivy:
-    class ObservableDict(kivy.event.Observable):
-        """
-        Wrapper around DictNode. Provides fbind() method which
-        lets kivy.lang.Builder to listen to state changes.
-        """
-
-        def __init__(self, dict_node):
-            # if dict_node._appstate_path.startswith('state.proxy_ref'):
-            #     logger.debug(dict_node._appstate_path)
-            self.__dict__['dict_node'] = dict_node
-            super().__init__()
-
-
-        def __setattr__(self, name, value):
-            # logger.debug(f"setattr {name} = {value}")
-            self.dict_node.__setattr__(name, value)
-
-        def __setitem__(self, name, value, signal=True):
-            # logger.debug(f"{name=}")
-            # super().__setattr__(name, value)
-            self.dict_node.__setitem__(name, value, signal)
-
-        def __repr__(self):
-            # return str(self.dict_node._appstate_path) #+ ' ' + self.dict_node.__repr__()
-            return self.dict_node.__repr__()
-
-        def __str__(self):
-            # return str(self.dict_node._appstate_path) #+ ' ' + self.dict_node.__repr__()
-            return str(self.dict_node) if self.dict_node else ''
-
-        def get(self, *a):
-            return self.dict_node.get(*a)
-
-        def values(self, *a):
-            return self.dict_node.values(*a)
-
-        def property(self, name, quiet=False):
-            return None
-
-        def __contains__(self, *a):
-            return self.dict_node.__contains__(*a)
-
-        def __getitem__(self, *a):
-            # logger.debug(f"__getitem__ {a=}")
-            return self.dict_node.__getitem__(*a)
-
-        def update(self, *a, **kw):
-            return self.dict_node.update(*a, **kw)
-
-        def setdefault(self, *a, **kw):
-            return self.dict_node.setdefault(*a, **kw)
-
-        def __getattribute__(self, val):
-            # logger.debug(f"getattr {val=}")
-            if val in ['__dict__', 'proxy_ref']:
-                return super().__getattribute__(val)
-            if val != 'dict_node' and 'dict_node' in self.__dict__ and val in self.dict_node:
-                return self.dict_node.__getattribute__(val)
-            try:
-                return super().__getattribute__(val)
-            except:
-                return self.dict_node.__getattribute__(val)
-
-        def __reduce__(self):
-            return (dict, (dict(self.dict_node),))
-
-        def __eq__(self, other):
-            return self.dict_node == other
-
-        def __bool__(self):
-            return bool(self.dict_node)
-
-        def fbind(self, name, func, args, **kwargs):
-            """ Called by kivy lang builder to bind state node. """
-            element, key, value, rule, idmap = args
-            logger.debug(f"{self.dict_node._appstate_path}.{name} {rule=}")
-
-            @on(f"{self.dict_node._appstate_path}.{name}")
-            def x():
-                # logger.debug(f"Calling {self.dict_node._appstate_path}.{name}")
-                func(args, None, None)
-
-else:
-    ObservableDict = DictNode
-
 class State(DictNode):
     """
     Root node, singleton.
     """
-
-    _appstate_path = 'state'
 
     def reset(self):
         for key in list(self.keys()):
@@ -455,7 +395,7 @@ class on:
 
     """
 
-    # Watchlist mapping 'state.foo' -> list of callables
+    # Watchlist mapping 'state.foo.' -> list of callables
     handlers: dict[str, list[signal_handler]] = defaultdict(list)
 
     def __init__(self, *patterns: str):
@@ -488,11 +428,21 @@ class on:
 
     @staticmethod
     def trigger(path: str) -> None:
+        """
+        Execute all signal handlers that match given path pattern.
+
+        Called by DictNode when it is changed. Parameter `path` is changed node's
+        _appstate_path. For ex: "state.countries.au"
+        """
         for handler in on.match(path + '.'):
             handler.deliver()
 
     @staticmethod
     def match(path: str) -> Generator[signal_handler]:
+        """
+        Yield all signal_handlers that match given path pattern.
+        Called by on.trigger().
+        """
         for pattern in list(on.handlers):
             if pattern.startswith(path):
                 # state.foo.bar. handler triggered by change of state.foo.
@@ -502,7 +452,4 @@ class on:
                 yield from on.handlers[pattern]
 
 
-if kivy:
-    state = ObservableDict(State())
-else:
-    state = State()
+state = State(path='state')
