@@ -31,14 +31,14 @@ def clean_state():
 
 def test_assign_with_intermediate_node(mocker):
     assert state == {}
-    state.countries.RU.data = 3
-    assert state == {'countries': {'RU': {'data': 3}}}
+    state.countries.RU.num = 3
+    assert state == {'countries': {'RU': {'num': 3}}}
 
-    state.regions = [{'ru_77': {'data': 'yes'}}]
-    assert state['regions'] == [{'ru_77': {'data': 'yes'}}]
+    state.regions = [{'ru_77': {'num': 'yes'}}]
+    assert state['regions'] == [{'ru_77': {'num': 'yes'}}]
     assert state == {
-        'countries': {'RU': {'data': 3}},
-        'regions': [{'ru_77': {'data': 'yes'}}]
+        'countries': {'RU': {'num': 3}},
+        'regions': [{'ru_77': {'num': 'yes'}}]
     }
 
 
@@ -91,10 +91,14 @@ def test_autopersist(tmp_path: Path):
 def test_get():
     state.countries = {'AU': {'questions': [ {'id': 1} ]}}
 
+    assert state == {'countries': {'AU': {'questions': [ {'id': 1} ]}}}
+    assert state.countries.AU == {'questions': [ {'id': 1} ]}
+
     au = state.countries.AU
 
     assert au._appstate_path == 'state.countries.AU'
     assert state.countries.AU == au
+    assert au == {'questions': [ {'id': 1} ]}
 
     au.answers = 123
     assert state.countries.AU.answers == 123
