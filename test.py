@@ -126,3 +126,12 @@ def test_get():
     }}}
 
 
+def test_values():
+    state.countries = {'AU': {'id': 1}, 'RU': {'id': 2}}
+
+    values = state.countries.values()
+
+    assert {'id': 1} in values
+    assert {'id': 2} in values
+
+    assert {x._appstate_path for x in values} == {'state.countries.AU', 'state.countries.RU'}

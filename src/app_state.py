@@ -121,13 +121,6 @@ class DictNode(BaseDict):
         super().__delitem__(key)
         on.trigger(f'{self._appstate_path}.{key}')
 
-    def values(self):
-        for value in super().values():
-            if isinstance(value, Mapping):
-                yield DictNode(value)
-            else:
-                yield value
-
     def update(self, *a, signal=True, **kw):
         # logger.debug(f'update {a}, {kw}')
 
