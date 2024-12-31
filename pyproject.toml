@@ -1,6 +1,6 @@
 [project]
 name = "app_state"
-version = "0.6"
+version = "0.7"
 description = "app_state"
 authors = [
     {name = "Evstifeev Roman", email = "someuniquename@gmail.com"},

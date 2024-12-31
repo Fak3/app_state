@@ -93,7 +93,7 @@ class DictNode(BaseDict):
             else:
                 result += f'{" "*depth} "{key}": {self[key]!r}\n'
 
-        return result + f'\n{" "*depth}}}>'
+        return result + f'\n{" "*depth}}}>\n'
         return repr(self.as_dict(full=True))
 
     def __str__(self):
