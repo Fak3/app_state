@@ -52,7 +52,12 @@ if kivy:
             @on(f"{self._appstate_path}.{name}")
             def notify_kivy():
                 # logger.debug(f"Calling {self._appstate_path}.{name}")
-                func(args, None, None)
+                try:
+                    func(args, None, None)
+                except ReferenceError as err:
+                    # TODO: unbind?
+                    # on.unregister(notify_kivy)
+                    logger.warning(err)
 
 else:
     BaseDict = UserDict

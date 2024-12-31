@@ -5,6 +5,7 @@ deps = toml['project']["dependencies"] + toml['dependency-groups']["test"]
 
 @nox.session
 def test(session):
+    # session.install('ipdb', *deps)
     session.install(*deps)
     session.run(*'pytest --ignore=test_kivy.py --doctest-modules'.split() + session.posargs)
 
