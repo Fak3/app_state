@@ -43,9 +43,6 @@ if kivy:
             """ kivy builder requires this method. """
             return None
 
-        # def __reduce__(self):
-        #     """ Persist as a regular dict """
-        #     return (dict, (self.data,))
 
         def fbind(self, name, func, args, **kwargs):
             """ Called by kivy lang builder to bind state node. """
@@ -72,7 +69,26 @@ class DictNode(BaseDict):
         if kwargs:
             self.update(kwargs, signal=False)
 
+    def __reduce__(self):
+        """ Persist as a regular dict """
+        return (dict, (self.data,))
+
     def __repr__(self):
+        path = self._appstate_path.split('.')
+        depth = len(path) - 1
+        if not self:
+            return f'{" "*depth}<DictNode {self._appstate_path} {{}}>'
+
+        result =  f'{" "*depth}<DictNode {self._appstate_path} {{\n'
+        if '_list' in path:
+            result = '\n' + result
+        for key in self:
+            if isinstance(self[key], DictNode):
+                result += f'{self[key]!r}\n'
+            else:
+                result += f'{" "*depth} "{key}": {self[key]!r}\n'
+
+        return result + f'\n{" "*depth}}}>'
         return repr(self.as_dict(full=True))
 
     def __str__(self):
