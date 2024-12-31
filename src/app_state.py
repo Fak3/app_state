@@ -105,8 +105,13 @@ class DictNode(BaseDict):
         return DictNode(value, path=f'{self._appstate_path}.{key}')
 
     def __getitem__(self, name):
-        # logger.debug(f'__getitem__ {self._appstate_path}.{name}')
-        return self._make_subnode(name, super().__getitem__(name))
+        result = super().__getitem__(name)
+        if isinstance(result, list):
+            # logger.debug(f'__getitem__ {self._appstate_path}.{name}')
+            return [self._make_subnode(f'{name}._list', x) for x in result]
+
+        return self._make_subnode(name, result)
+
 
     def get(self, key, *args, **kwargs):
         # logger.debug(f'get {self._appstate_path}.{key}')
@@ -133,7 +138,8 @@ class DictNode(BaseDict):
                 return self._make_subnode(name, {})
 
         if isinstance(result, list):
-            result = [self._make_subnode('_list', x) for x in result]
+            # logger.debug(f'__getattribute__ {name}')
+            result = [self._make_subnode(f'{name}._list', x) for x in result]
 
         return result
 
@@ -234,11 +240,16 @@ class DictNode(BaseDict):
 
     def as_dict(self, full=False):
         result = {}
-        for k, v in self.items():
-            if isinstance(v, DictNode):
-                result[k] = v.as_dict(full=full)
+        for key, val in self.items():
+            if isinstance(val, DictNode):
+                result[key] = val.as_dict(full=full)
+            elif isinstance(val, list):
+                result[key] = [
+                    x.as_dict(full=full) if isinstance(x, DictNode) else x
+                    for x in val
+                ]
             else:
-                result[k] = v
+                result[key] = val
 
         if not full:
             return result
