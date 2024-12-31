@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import os
 import shelve
 from collections import defaultdict, UserDict
 from collections.abc import Mapping
@@ -9,6 +10,9 @@ from functools import update_wrapper, partial
 from collections.abc import Callable, Generator, Coroutine
 from pathlib import Path
 from textwrap import shorten
+
+import os
+os.environ.setdefault("KIVY_NO_ARGS", "1")
 
 try:
     import kivy.event
