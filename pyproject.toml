@@ -47,7 +47,7 @@ debug = [
 
 [tool.pdm.scripts]
 _.env_file = "env-local"
-test = "nox --reuse-venv=yes"
+test = "nox --reuse-venv=yes -- -s --log-level=DEBUG -vv"
 
 [project.urls]
 Homepage = "https://github.com/Fak3/app_state"
